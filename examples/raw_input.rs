@@ -1,21 +1,23 @@
 use std::io::{Read, Write};
+
+use nix::sys::ptrace::interrupt;
 mod tsc {
-    pub use termset::termset_core::*;
+    pub use termset::core::*;
 }
 
 fn main() {
     let mut termset = tsc::Termset::new();
     termset.disable_lflag(tsc::ECHO | tsc::ICANON);
     termset.update(None);
-    
+
+    let mut token_builder = tsc::TokenBuilder::new();
     loop {
         if let Some(byte) = tsc::stdin_read_byte() {
-            if byte.is_ascii_control() {
-                print!("<ctrl>");
-            } else {
-                print!("{}", byte as char);
+            token_builder.feed(byte);
+            if let Some(token) = token_builder.interpret() {
+                println!("token = {:?}", token);
+                token_builder.clear();
             }
-            let _ = std::io::stdout().lock().flush();
         } else {
             break;
         }

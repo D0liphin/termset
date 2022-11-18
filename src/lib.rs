@@ -1,1 +1,1 @@
-pub mod termset_core;
+pub mod core;
