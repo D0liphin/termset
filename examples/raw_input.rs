@@ -1,12 +1,15 @@
-use std::io::{Read, Write};
+// use std::io::{Read, Write};
+use rtc::rtc_println;
 
-use nix::sys::ptrace::interrupt;
 mod tsc {
     pub use termset::core::*;
 }
 
 fn main() {
+    rtc_println!("---");
+
     let mut termset = tsc::Termset::new();
+    // termset.restore_on_sigint();
     termset.disable_lflag(tsc::ECHO | tsc::ICANON);
     termset.update(None);
 
@@ -15,11 +18,11 @@ fn main() {
         if let Some(byte) = tsc::stdin_read_byte() {
             token_builder.feed(byte);
             if let Some(token) = token_builder.interpret() {
-                println!("token = {:?}", token);
+                let _ = rtc::REMOTE.send(&[token_builder.bytes()]);
                 token_builder.clear();
             }
         } else {
-            break;
+            rtc_println!("error!");
         }
     }
 

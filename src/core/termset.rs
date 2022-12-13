@@ -1,9 +1,5 @@
 use libc;
 
-unsafe fn uninit<T>() -> T {
-    std::mem::MaybeUninit::uninit().assume_init()
-}
-
 #[cfg(target_os = "linux")]
 pub struct Termset {
     entry_config: Box<libc::termios>,
@@ -25,13 +21,13 @@ pub const ICANON: LFlag = libc::ICANON as LFlag;
 
 impl Termset {
     pub fn new() -> Self {
-        let mut termios = unsafe {
+        let termios = unsafe {
             // using things from <termios.h> here. <termios.h> defines the structure of the
             // termios file, which provides the terminal interface for POSIX compatibility. My
             // understanding of what this means is that stdin contains some file attributes
             // which you can modify to change the way the terminal works. This is just the POSIX
             // compliant way of doing this
-            let mut termios: libc::termios = uninit();
+            let mut termios: libc::termios = std::mem::zeroed();
             libc::tcgetattr(libc::STDIN_FILENO, &mut termios as *mut libc::termios);
             termios
         };
@@ -65,6 +61,13 @@ impl Termset {
         }
     }
 
+    // /// register a signal hook to restore the terminal on `SIGINT`
+    // pub fn restore_on_sigint(&'static mut self) {
+    //     unsafe { 
+    //         signal_hook::low_level::register(libc::SIGINT,  move || {self.restore()});
+    //     }
+    // }
+
     /// Restore instantly, consuming this object
     pub fn restore(self) {
         self.reset();
@@ -84,7 +87,7 @@ impl Drop for Termset {
 #[cfg(target_os = "linux")]
 pub fn stdin_read_byte() -> Option<u8> {
     unsafe {
-        let mut byte: u8 = uninit();
+        let mut byte: u8 = 0;
         let bytes_read = libc::read(
             libc::STDIN_FILENO,
             &mut byte as *mut u8 as *mut libc::c_void,
