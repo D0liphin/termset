@@ -1,5 +1,7 @@
 use lazy_static::lazy_static;
-use std::{fmt, io, mem, net};
+use std::{fmt, io, mem, net, time};
+pub mod server;
+pub use crate::server::*;
 
 pub const DEFAULT_ADDRESS: &'static str = "127.0.0.1:7777";
 
@@ -7,6 +9,9 @@ pub const DEFAULT_ADDRESS: &'static str = "127.0.0.1:7777";
 lazy_static! {
     pub static ref REMOTE: RemoteTerminal =
         RemoteTerminal::new(DEFAULT_ADDRESS).expect("could not initialize default remote terminal");
+}
+
+lazy_static! {
     static ref PROCESS_TAG: String = format!("[{}] ", std::process::id());
 }
 
@@ -25,12 +30,11 @@ macro_rules! panic_if_err {
 #[macro_export]
 macro_rules! rtc_println {
     () => {
-        $crate::panic_if_err!($crate::REMOTE.print_tagged("\n"));
+        $crate::panic_if_err!($crate::REMOTE.println_tagged(""));
     };
     ($($arg:tt)*) => {{
-        let mut message = format!($($arg)*);
-        message.push('\n');
-        $crate::panic_if_err!($crate::REMOTE.print_tagged(&[message.as_bytes()]));
+        let message = format!($($arg)*);
+        $crate::panic_if_err!($crate::REMOTE.println_tagged(&message));
     }};
 }
 
@@ -39,42 +43,119 @@ struct MessageHeader {
     size: u16,
 }
 
+// TODO: implement io::Write instead of fmt::Write
+/// represents a link to a remote terminal via Udp. There are alll sorts of issues with
+/// this implementation, namely busy waiting using `peek_from` which is explicitly
+/// advised against. I don't really care since I have a lot of CPU cores to work with,
+/// but this really needs fixing some day.
+///
+/// ## Advised usage:
+/// ```rs
+/// use rtc::RemoteTerminal;
+/// use once_cell::sync::Lazy;
+///
+/// static RT: Lazy<RemoteTerminal> = Lazy::new(|| RemoteTerminal::new("127.0.0.1:7777"));
+///
+/// fn main() {
+///     write!(RT, "Hello, world!");
+/// }
+/// ```
+///
+/// ## Also possible usage:
+/// ```rs
+/// use rtc::rtc_println;
+///
+/// fn main() {
+///     rtc_println!("Hello, world!");
+/// }
+/// ```
 pub struct RemoteTerminal {
     socket: net::UdpSocket,
+    options: u32,
+    start_time: time::SystemTime,
 }
 
-#[derive(Debug)]
-pub enum RemoteTerminalError {
-    MessageTooLarge,
-    IoError(io::Error),
-}
-
-impl From<io::Error> for RemoteTerminalError {
-    fn from(error: io::Error) -> Self {
-        Self::IoError(error)
+// TODO: rethink this implementation -- it forces us to act like `RemoteTerminal` is mutable
+// when it isn't. Perhaops use a buffered writer which *is* actually mutable?
+impl fmt::Write for RemoteTerminal {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let result = if (self.options & Self::PRINT_PROC_ID) > 0 {
+            self.print_tagged(s)
+        } else {
+            self.send(&[s.as_bytes()])
+        };
+        match result {
+            Err(_) => Err(fmt::Error),
+            Ok(_) => Ok(()),
+        }
+    }
+    fn write_fmt(&mut self, fmt_args: fmt::Arguments<'_>) -> fmt::Result {
+        self.write_str(&format!("{}", fmt_args))
     }
 }
 
-impl fmt::Display for RemoteTerminalError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "cannot send a message with length greater than u16::MAX bytes"
-        )
-    }
-}
+const MAX_UDP_DATAGRAM_BYTES: usize = 65_507;
 
 impl RemoteTerminal {
+    /// The maximum number of bytes that you can send to the remote terminal, this is
+    /// less than the max UDP datagram size as messages includes a custom `MessageHeader`
+    pub const MAX_MESSAGE_SIZE: usize = MAX_UDP_DATAGRAM_BYTES - mem::size_of::<MessageHeader>();
+
+    /// default option that includes the process ID when printing to the remote terminal
+    pub const PRINT_PROC_ID: u32 = 0b1;
+
+    pub const DEFAULT_OPTIONS: u32 = Self::PRINT_PROC_ID;
+
+    /// create a link to a new terminal with default options
     pub fn new(address: &str) -> io::Result<Self> {
+        Self::new_with_options(address, Self::DEFAULT_OPTIONS)
+    }
+
+    /// create a link to a new terminal with no options as default (all must be specified)
+    ///
+    /// probably just don't use this... the default options are nice and useful :)
+    pub fn new_with_options(address: &str, options: u32) -> io::Result<Self> {
         let socket = net::UdpSocket::bind("0.0.0.0:0")?;
         socket.connect(address)?;
-        Ok(Self { socket })
+        Ok(Self {
+            socket,
+            options,
+            start_time: time::SystemTime::now(),
+        })
+    }
+
+    fn print_process_info(&self, message: &str) -> io::Result<()> {
+        self.send(&[format!("+{:-^78}+\n| {: ^76} |\n+{:-^78}+\n", "", message, "").as_bytes()])
+    }
+
+    /// prints a marker containing the process number and the time
+    pub fn print_process_start(&self) -> io::Result<()> {
+        self.print_process_info(&format!(
+            "start [{}] at {}",
+            std::process::id(),
+            chrono::DateTime::<chrono::Local>::from(self.start_time).time()
+        ))
+    }
+
+    /// prints a marker containing the process number and the time
+    pub fn print_process_end(&self) -> io::Result<()> {
+        let now = time::SystemTime::now();
+        self.print_process_info(&format!(
+            "finish [{}] at {:?} | took {:?}",
+            std::process::id(),
+            chrono::DateTime::<chrono::Local>::from(now).time(),
+            if let Ok(duration) = now.duration_since(self.start_time) {
+                format!("{:?}", duration)
+            } else {
+                String::from("???")
+            }
+        ))
     }
 
     /// concatenate `message_parts` and send it to the remote terminal, attaching the header
-    /// 
+    ///
     /// You probably shouldn't use this, but do so at your own peril!!
-    pub fn send(&self, message_parts: &[&[u8]]) -> Result<(), RemoteTerminalError> {
+    pub fn send(&self, message_parts: &[&[u8]]) -> io::Result<()> {
         // get headed size
         let mut len = 0;
         for &part in message_parts.iter() {
@@ -82,7 +163,14 @@ impl RemoteTerminal {
         }
         len += mem::size_of::<MessageHeader>();
         if len > u16::MAX as _ {
-            return Err(RemoteTerminalError::MessageTooLarge);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "cannot send datagram larger than {} bytes, got {} bytes",
+                    Self::MAX_MESSAGE_SIZE,
+                    len
+                ),
+            ));
         }
 
         let mut headed_message = Vec::<u8>::with_capacity(len);
@@ -102,22 +190,18 @@ impl RemoteTerminal {
 
     /// Prints a tagged message to the remote terminal, the tag includes the process id of the
     /// the process from which the message is sent.
-    ///
-    /// The message is a list of message parts to copy from (so that you don't need to copy
-    /// the parts yourself before sending the message)
-    pub fn print_tagged(&self, message_parts: &[&[u8]]) -> Result<(), RemoteTerminalError> {
-        let mut message_parts_vec = Vec::with_capacity(message_parts.len() + 1);
-        message_parts_vec.push(PROCESS_TAG.as_bytes());
-        for &part in message_parts {
-            message_parts_vec.push(part);
-        }
-        self.send(&message_parts_vec)?;
-        Ok(())
+    pub fn print_tagged(&self, message: &str) -> io::Result<()> {
+        self.send(&[PROCESS_TAG.as_bytes(), message.as_bytes()])
     }
 
     /// Basic println function, which panics if it errors, instead of returning a result, it
     /// contains a process id tag
-    pub fn println_tagged(&self, message: &str) {
-        panic_if_err!(self.print_tagged(&[message.as_bytes()]));
+    pub fn println_tagged(&self, message: &str) -> io::Result<()> {
+        self.send(&[PROCESS_TAG.as_bytes(), message.as_bytes(), b"\n"])
+    }
+
+    /// print an exact message to the remote terminal, this immediately flushes
+    pub fn print(&self, message: &str) -> io::Result<()> {
+        self.send(&[message.as_bytes()])
     }
 }

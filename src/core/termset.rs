@@ -1,4 +1,7 @@
-use libc;
+use crate::core::err::*;
+use libc::{self, EBADF, ENOTTY};
+use nix::errno::errno;
+use std::mem;
 
 #[cfg(target_os = "linux")]
 pub struct Termset {
@@ -14,27 +17,39 @@ pub const TCSA_FLUSH: TCSA = libc::TCSAFLUSH as TCSA;
 
 type LFlag = u32;
 
-// characters are echoed as they are received
+/// characters are echoed as they are received
 pub const ECHO: LFlag = libc::ECHO as LFlag;
-// input is line by line
+/// input is line by line
 pub const ICANON: LFlag = libc::ICANON as LFlag;
+/// suspend process on CTRL-C or CTRL-Z
+pub const ISIG: LFlag = libc::ISIG as LFlag;
 
 impl Termset {
-    pub fn new() -> Self {
+    /// TODO: docs
+    pub fn new() -> Result<Self, TermsetCreationError> {
         let termios = unsafe {
             // using things from <termios.h> here. <termios.h> defines the structure of the
             // termios file, which provides the terminal interface for POSIX compatibility. My
             // understanding of what this means is that stdin contains some file attributes
             // which you can modify to change the way the terminal works. This is just the POSIX
             // compliant way of doing this
-            let mut termios: libc::termios = std::mem::zeroed();
-            libc::tcgetattr(libc::STDIN_FILENO, &mut termios as *mut libc::termios);
-            termios
+            let mut termios = mem::MaybeUninit::uninit();
+            let e = libc::tcgetattr(libc::STDIN_FILENO, termios.as_mut_ptr());
+            if e == -1 {
+                return Err(match errno() {
+                    EBADF => TermsetCreationError::BadFileDescriptor,
+                    ENOTTY => TermsetCreationError::NotATerminal,
+                    _ => unreachable!(),
+                });
+            } else {
+                termios.assume_init()
+            }
         };
-        Termset {
+
+        Ok(Termset {
             entry_config: Box::new(termios),
             config: termios,
-        }
+        })
     }
 
     /// Push updates to the terminal, optional_actions is an optional bitset
@@ -63,7 +78,7 @@ impl Termset {
 
     // /// register a signal hook to restore the terminal on `SIGINT`
     // pub fn restore_on_sigint(&'static mut self) {
-    //     unsafe { 
+    //     unsafe {
     //         signal_hook::low_level::register(libc::SIGINT,  move || {self.restore()});
     //     }
     // }
@@ -81,22 +96,5 @@ impl Termset {
 impl Drop for Termset {
     fn drop(&mut self) {
         self.reset();
-    }
-}
-
-#[cfg(target_os = "linux")]
-pub fn stdin_read_byte() -> Option<u8> {
-    unsafe {
-        let mut byte: u8 = 0;
-        let bytes_read = libc::read(
-            libc::STDIN_FILENO,
-            &mut byte as *mut u8 as *mut libc::c_void,
-            1,
-        );
-        if bytes_read == 1 {
-            Some(byte)
-        } else {
-            None
-        }
     }
 }

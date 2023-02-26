@@ -1,30 +1,72 @@
-// use std::io::{Read, Write};
 use rtc::rtc_println;
+use std::{
+    io::{self, Stdout, Write},
+    thread, time,
+};
+use termset::core::StdoutEscSeq;
 
 mod tsc {
     pub use termset::core::*;
 }
 
-fn main() {
-    rtc_println!("---");
-
-    let mut termset = tsc::Termset::new();
-    // termset.restore_on_sigint();
-    termset.disable_lflag(tsc::ECHO | tsc::ICANON);
+fn prepare_terminal() -> (tsc::Termset, tsc::TsStdout) {
+    let mut termset = tsc::Termset::new().unwrap();
+    termset.disable_lflag(tsc::ECHO | tsc::ICANON | tsc::ISIG);
     termset.update(None);
 
-    let mut token_builder = tsc::TokenBuilder::new();
+    let mut stdout = tsc::TsStdout::new();
+    stdout
+        .exec([
+            &StdoutEscSeq::SaveCursorPosition,
+            &StdoutEscSeq::SaveScreen,
+            &StdoutEscSeq::EraseEntireScreen,
+        ])
+        .flush();
+
+    (termset, stdout)
+}
+
+fn restore_terminal(termset: tsc::Termset, mut ts_stdout: tsc::TsStdout) {
+    ts_stdout
+        .exec([
+            &StdoutEscSeq::RestorCursorPosition,
+            &StdoutEscSeq::RestoreScreen,
+        ])
+        .flush();
+    termset.restore();
+}
+
+fn main() {
+    let (termset, mut stdout) = prepare_terminal();
+
+    let mut tr = tsc::TokenReader::new();
     loop {
-        if let Some(byte) = tsc::stdin_read_byte() {
-            token_builder.feed(byte);
-            if let Some(token) = token_builder.interpret() {
-                let _ = rtc::REMOTE.send(&[token_builder.bytes()]);
-                token_builder.clear();
-            }
-        } else {
-            rtc_println!("error!");
+        let token = tr.next();
+        rtc_println!("token = {:?}", token);
+
+        if token == tsc::Token::Char("\u{3}") {
+            break;
         }
+
+        match token {
+            tsc::Token::Char(c) => match c {
+                "\u{7f}" => {
+                    stdout
+                        .exec([&StdoutEscSeq::MoveLeft(1)])
+                        .write_str(" ")
+                        .exec([&StdoutEscSeq::MoveLeft(1)]);
+                }
+                _ => {
+                    stdout.write_str(c);
+                }
+            },
+            tsc::Token::Esc(seq) => {
+                stdout.exec([&seq.as_stdout_esc_seq().unwrap()]);
+            }
+        }
+
+        stdout.flush();
     }
 
-    termset.restore();
+    restore_terminal(termset, stdout);
 }

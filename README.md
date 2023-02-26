@@ -21,3 +21,8 @@ this should actually work just fine on Windows right now, though I do not care.
 This is (pretty much) an exhaustive list. I intend to make a more complex TUI library on top of 
 this, but I know a lot of people want to do that kind of thing on their own, so I'm hoping this
 can act as an easy-to-learn backend for people who want to make their own TUI (for fun).
+
+## `src/rtc`
+
+This library contains a library `rtc` that may be useful when debugging. It exposes this library under
+`termset::rtc` 

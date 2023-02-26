@@ -5,6 +5,9 @@ edition = "2021"
 
 [dependencies]
 lazy_static = "1.4.0"
+chrono = "*"
+colored = "*"
+indoc = "*"
 
 [features]
 default = ["default_remote"]
