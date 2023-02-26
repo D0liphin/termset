@@ -24,12 +24,13 @@ This is (pretty much) an exhaustive list. I intend to make a more complex TUI li
 this, but I know a lot of people want to do that kind of thing on their own, so I'm hoping this
 can act as an easy-to-learn backend for people who want to make their own TUI (for fun).
 
-<<<<<<< HEAD
 ## `src/rtc`
 
 This library contains a library `rtc` that may be useful when debugging. It exposes this library under
 `termset::rtc` 
-=======
+
+## Example
+
 ```rs
 fn prepare_terminal() -> (tsc::Termset, tsc::TsStdout) {
     // turn off all those pesky defaults!
@@ -102,4 +103,3 @@ fn main() {
 }
 
 ```
->>>>>>> 8cdc38a1461ad0e1492ae23f6d3cbc99bb2b63ca
