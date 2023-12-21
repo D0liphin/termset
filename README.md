@@ -7,6 +7,10 @@ alternative backend to something like ncurses.
 I have no intention of making this compatible with anything other than Linux, however, I believe
 this should actually work just fine on Windows right now, though I do not care.
 
+**Since I've learned more about UB, I have a had a quick skim of this code and declared it 
+"definitely unsound".** Don't use it for anything. It's mostly minor things, I don't think I was 
+completely stupid 10 months ago, but I do things like transmuting `#[repr(Rust)]` types.
+
 ### Desired Functionality
 
 I'm checking these off but they're hardly done really...
